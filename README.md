@@ -116,7 +116,13 @@ uv run python script/network/analyze_har.py
 先准备好 `cookie.jsonc`（或设置环境变量 `JWX_COOKIE`），然后使用：
 
 ```bash
-# 列出课程（默认 TSV：课程名/老师/学分/剩余/kcid/jx0404id）
+# 可选：设置默认批次（jx0502zbid），避免每次都传 --batch-id
+# PowerShell:
+$env:JWX_BATCH_ID="2F261F6F7B3D47549344FC34A0A4A749"
+# bash:
+export JWX_BATCH_ID="2F261F6F7B3D47549344FC34A0A4A749"
+
+# 列出课程（默认 TSV：课程名/老师/学分/剩余/课程ID(kcid)/jx0404id）
 uv run jwx courses list --length 10
 
 # 按关键词筛选（服务端筛选）
@@ -124,6 +130,17 @@ uv run jwx courses list --kcxx 英语 --length 50
 
 # 选择指定课程（需要 kcid + jx0404id）
 uv run jwx select --kcid <KCID> --jx0404id <JX0404ID>
+
+# 查看已选课程（HTML 或 JSON）
+uv run jwx courses selected > selected.html
+uv run jwx courses selected --json
+
+```
+
+```
+> 没试过
+# 退选（需要 jx0404id，可从 “已选课程 JSON” 或页面中找到）
+uv run jwx drop --jx0404id <JX0404ID>
 
 # 定时选课：到点后开始重试（间隔 0.5s，最多 120 次）
 uv run jwx schedule select --at "2026-03-13 08:00:00" --attempts 120 --kcid <KCID> --jx0404id <JX0404ID>
@@ -141,19 +158,16 @@ uv run jwx schedule auto --at "2026-03-13 08:00:00" --kcxx 通识 --attempts 120
 - ✅ 课程筛选（按学分、剩余人数、时间冲突）
 - ✅ 自动选课
 - ✅ 学分限制检查
-- ⚠️ **禁用退选功能**（安全考虑）
 
 ## 安全约束
 
 ### 学分限制
 - 总学分限制: 3 学分
-- 当前已选: 2 学分
-- **只能选择 1 学分的课程**
 
 ### 危险操作
-- ❌ 退选课程 - 已禁用
-- ❌ 批量操作 - 需谨慎使用
-- ❌ 绕过冲突检查 - 禁止
+- ✅ 退选课程 - 已支持（`jwx drop`，高风险，务必确认 `jx0404id`）
+- ✅ 批量/轮询操作 - 已支持（`jwx auto` / `jwx schedule ...`，请控制频率）
+- ✅ 绕过冲突检查 - 已支持（`--allow-conflict`，可能导致课表冲突，后果自负）
 
 ## 开发指南
 
@@ -177,6 +191,12 @@ uv run jwx schedule auto --at "2026-03-13 08:00:00" --kcxx 通识 --attempts 120
 ### Q: Cookie 过期怎么办？
 A: 重新登录教务系统，按照上述步骤重新获取 Cookie。
 
+### Q: 出现 `Not authenticated (cookie invalid/expired)`？
+A: 服务端把请求重定向到 CAS 登录页了。更新 `cookie.jsonc` 里的 `bzb_jsxsd`（或设置 `JWX_COOKIE`）后重试。
+
+### Q: 课程列表/选课接口 404 或返回 HTML？
+A: 通常是还没进入选课批次。需要带上 `--batch-id <jx0502zbid>`（从选课页面 URL `.../xsxk/newXsxkzx?jx0502zbid=...` 获取），或设置 `JWX_BATCH_ID`。
+
 ### Q: 选课失败？
 A: 检查：
 1. Cookie 是否有效
@@ -194,11 +214,3 @@ A: 访问 https://jwx.dgut.edu.cn/xsxkjg/comeXkjglb
 - 不要进行恶意操作
 - 不要频繁请求导致服务器压力
 - 使用者需自行承担使用风险
-
-## 许可证
-
-MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！

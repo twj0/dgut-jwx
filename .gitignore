@@ -10,3 +10,4 @@ wheels/
 .venv
 reference/
 /developer
+selected.html
