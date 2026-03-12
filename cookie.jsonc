@@ -1,0 +1,16 @@
+[
+    {
+        "name": "bzb_jsxsd",
+        "value": "66426C0D62471D0DC05D4EEB469F8FAA",
+        "domain": "jwx.dgut.edu.cn",
+        "hostOnly": true,
+        "path": "/",
+        "secure": false,
+        "httpOnly": true,
+        "sameSite": null,
+        "session": true,
+        "firstPartyDomain": "",
+        "partitionKey": null,
+        "storeId": null
+    }
+]
