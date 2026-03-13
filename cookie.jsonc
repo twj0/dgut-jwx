@@ -1,7 +1,8 @@
 [
     {
         "name": "bzb_jsxsd",
-        "value": "E7FA6E4AF2802B520A97ABA9711D4A0B",
+        // 这里是bzb_jsxsd的值
+        "value": "ED24FFC8841020F64E4D6471C9E923D8", 
         "domain": "jwx.dgut.edu.cn",
         "hostOnly": true,
         "path": "/",
