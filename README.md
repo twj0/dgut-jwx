@@ -139,20 +139,33 @@ uv run jwx courses selected --json
 
 ```
 
-```
-> 没试过
+```bash
 # 退选（需要 jx0404id，可从 “已选课程 JSON” 或页面中找到）
 uv run jwx drop --jx0404id <JX0404ID>
 
 # 定时选课：到点后开始重试（间隔 0.5s，最多 120 次）
-uv run jwx schedule select --at "2026-03-13 08:00:00" --attempts 120 --kcid <KCID> --jx0404id <JX0404ID>
+uv run jwx schedule select --at "2026-03-13 08:00:00" --attempts 120 --interval 0.1 --kcid <KCID> --jx0404id <JX0404ID>
 
 # 自动选课：从列表里挑第一个满足条件的课程并选（默认 max-xf=1.0, min-seats=1）
 uv run jwx auto --kcxx 通识 --length 50
 
-# 定时自动选课：到点后循环“拉列表→挑候选→尝试选课”
-uv run jwx schedule auto --at "2026-03-13 08:00:00" --kcxx 通识 --attempts 120 --interval 0.5
+# 模糊选课：用自然语言关键词匹配（多个匹配默认选第一个；不并发）
+uv run jwx pick 科学技术史
+uv run jwx pick 混合公选 数学
+
+# 定时模糊抢课：到点后循环“拉列表→匹配关键词→尝试选课”（默认 interval=0.1s）
+uv run jwx schedule pick --at "2026-03-13 08:00:00" --interval 0.1 --attempts 120 混合公选 数学
+
+# 定时自动选课：到点后循环“拉列表→挑候选→尝试选课”（默认 interval=0.1s）
+uv run jwx schedule auto --at "2026-03-13 08:00:00" --kcxx 通识 --attempts 120 --interval 0.1
 ```
+
+#### 会话/批次注意事项（很重要）
+
+- **单会话踢出**：如果浏览器访问 `https://jwx.dgut.edu.cn/xsxkjg/comeXkjglb` 也提示“当前账号已在别处登录，请重新登录进入选课！”，说明后端判定会话失效/被踢，不是 CLI 的问题。常见原因是同账号多端同时在线（浏览器 + 脚本、另一台设备等）。
+- **建议做法**：只保留一个登录端；在选课页面点击 **“安全退出选课”** 后再重新登录并更新 `bzb_jsxsd`。
+- **选课批次**：课程列表/选课接口需要先进入选课批次（`jx0502zbid`）。未进入批次时会出现 404 或返回 HTML。用 `--batch-id <jx0502zbid>` 或设置 `JWX_BATCH_ID`。
+- **参数别填错**：`kcid`/课程ID 通常是 32 位十六进制；`jx0404id` 通常是数字串（教学任务 ID）。`--jx0404id` 不能用 `kcid` 代替。
 
 ## 功能特性
 

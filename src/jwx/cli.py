@@ -32,6 +32,43 @@ def _resolve_cookie(args: argparse.Namespace) -> str:
     return load_cookie_value(args.cookie_file)
 
 
+def _format_api_failure(payload) -> str:
+    if isinstance(payload, dict):
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return json.dumps(payload, ensure_ascii=False)
+    return str(payload)
+
+
+def _parse_keywords(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    for sep in ("，", ",", "；", ";", "\t"):
+        text = text.replace(sep, " ")
+    return [p.strip() for p in text.split(" ") if p.strip()]
+
+
+def _course_search_haystack(course: dict) -> str:
+    fields = (
+        course.get("kcmc"),
+        course.get("kch"),
+        course.get("skls"),
+        course.get("szkcflmc"),
+        course.get("kctype"),
+        course.get("skfsmc"),
+    )
+    return " ".join(str(v) for v in fields if v)
+
+
+def _keyword_match(course: dict, keywords: list[str]) -> bool:
+    if not keywords:
+        return False
+    haystack = _course_search_haystack(course).lower()
+    return all(kw.lower() in haystack for kw in keywords)
+
+
 def cmd_courses_list(args: argparse.Namespace) -> int:
     cookie_value = _resolve_cookie(args)
     try:
@@ -117,7 +154,7 @@ def cmd_drop(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    print(result.get("message", result))
+    print(_format_api_failure(result))
     return 0 if result.get("success") is True else 1
 
 
@@ -171,6 +208,48 @@ def cmd_auto_select(args: argparse.Namespace) -> int:
                     break
                 display_start += args.length
                 s_echo += 1
+            max_xf = args.max_xf
+            min_seats = args.min_seats
+
+            filtered: list[dict] = []
+            for course in candidates:
+                xf = _as_float(course.get("xf"))
+                if xf is not None and xf > max_xf:
+                    continue
+
+                syrs = _as_int(course.get("syrs"))
+                if syrs is not None and syrs < min_seats:
+                    continue
+
+                if not args.allow_conflict and _is_conflict(course):
+                    continue
+
+                sfkfxk = course.get("sfkfxk")
+                if sfkfxk not in (None, "", "1"):
+                    continue
+
+                filtered.append(course)
+
+            if not filtered:
+                print("未找到满足条件的课程", file=sys.stderr)
+                return 2
+
+            chosen = filtered[0]
+            kcmc = chosen.get("kcmc", "")
+            skls = chosen.get("skls", "")
+            xf = chosen.get("xf", "")
+            syrs = chosen.get("syrs", "")
+            kcid = chosen.get("kcid") or chosen.get("jx02id") or ""
+            jx0404id = chosen.get("jx0404id", "")
+            print(f"选择: {kcmc} / {skls} / xf={xf} / syrs={syrs}")
+            print(f"kcid={kcid} jx0404id={jx0404id}")
+
+            if args.dry_run:
+                return 0
+
+            result = client.select_course(kcid=kcid, jx0404id=jx0404id)
+            print(_format_api_failure(result))
+            return 0 if result.get("success") is True else 1
     except JwxAuthError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -178,49 +257,158 @@ def cmd_auto_select(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-        max_xf = args.max_xf
-        min_seats = args.min_seats
 
-        filtered: list[dict] = []
-        for course in candidates:
-            xf = _as_float(course.get("xf"))
-            if xf is not None and xf > max_xf:
-                continue
+def cmd_pick(args: argparse.Namespace) -> int:
+    cookie_value = _resolve_cookie(args)
+    keywords = _parse_keywords(" ".join(args.query))
+    if not keywords:
+        print("Missing keyword", file=sys.stderr)
+        return 2
 
-            syrs = _as_int(course.get("syrs"))
-            if syrs is not None and syrs < min_seats:
-                continue
+    try:
+        with JwxClient(base_url=args.base_url, cookie_value=cookie_value, timeout_s=args.timeout) as client:
+            batch_id = args.batch_id or os.getenv("JWX_BATCH_ID")
+            if batch_id:
+                client.init_batch(batch_id, isallsc=args.isallsc)
 
-            if not args.allow_conflict and _is_conflict(course):
-                continue
+            s_echo = args.echo
+            candidates: list[dict] = []
+            display_start = args.start
+            for _ in range(args.pages):
+                result = client.list_courses(
+                    display_start=display_start,
+                    display_length=args.length,
+                    s_echo=s_echo,
+                    query_params={"kcxx": args.kcxx or "", "skls": args.skls or ""},
+                )
+                rows = result.get("aaData") or []
+                candidates.extend(rows)
+                if len(rows) < args.length:
+                    break
+                display_start += args.length
+                s_echo += 1
 
-            sfkfxk = course.get("sfkfxk")
-            if sfkfxk not in (None, "", "1"):
-                continue
+            min_seats = args.min_seats
+            matched: list[dict] = []
+            for course in candidates:
+                syrs = _as_int(course.get("syrs"))
+                if syrs is not None and syrs < min_seats:
+                    continue
+                if not args.allow_conflict and _is_conflict(course):
+                    continue
+                if not _keyword_match(course, keywords):
+                    continue
+                matched.append(course)
 
-            filtered.append(course)
+            if not matched:
+                print(f"No match for: {' '.join(keywords)}", file=sys.stderr)
+                return 2
 
-        if not filtered:
-            print("未找到满足条件的课程", file=sys.stderr)
-            return 2
+            chosen = matched[0]
+            kcmc = chosen.get("kcmc", "")
+            skls = chosen.get("skls", "")
+            xf = chosen.get("xf", "")
+            syrs = chosen.get("syrs", "")
+            kcid = chosen.get("kcid") or chosen.get("jx02id") or ""
+            jx0404id = chosen.get("jx0404id", "")
+            print(f"选择: {kcmc} / {skls} / xf={xf} / syrs={syrs}")
+            print(f"kcid={kcid} jx0404id={jx0404id}")
 
-        chosen = filtered[0]
-        kcmc = chosen.get("kcmc", "")
-        skls = chosen.get("skls", "")
-        xf = chosen.get("xf", "")
-        syrs = chosen.get("syrs", "")
-        kcid = chosen.get("kcid") or chosen.get("jx02id") or ""
-        jx0404id = chosen.get("jx0404id", "")
-        print(f"选择: {kcmc} / {skls} / xf={xf} / syrs={syrs}")
-        print(f"kcid={kcid} jx0404id={jx0404id}")
+            if args.dry_run:
+                return 0
 
-        if args.dry_run:
-            return 0
+            result = client.select_course(kcid=kcid, jx0404id=jx0404id)
+    except JwxAuthError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
-        result = client.select_course(kcid=kcid, jx0404id=jx0404id)
-
-    print(result.get("message", result))
+    print(_format_api_failure(result))
     return 0 if result.get("success") is True else 1
+
+
+def cmd_schedule_pick(args: argparse.Namespace) -> int:
+    cookie_value = _resolve_cookie(args)
+    keywords = _parse_keywords(" ".join(args.query))
+    if not keywords:
+        print("Missing keyword", file=sys.stderr)
+        return 2
+
+    at = _parse_at(args.at) if args.at else None
+    if at is not None:
+        sleep_until(at)
+
+    if args.dry_run:
+        return cmd_pick(args)
+
+    try:
+        with JwxClient(base_url=args.base_url, cookie_value=cookie_value, timeout_s=args.timeout) as client:
+            batch_id = args.batch_id or os.getenv("JWX_BATCH_ID")
+            if batch_id:
+                client.init_batch(batch_id, isallsc=args.isallsc)
+
+            def action():
+                s_echo = int(time.time()) % 100000
+                candidates: list[dict] = []
+                display_start = args.start
+                for _ in range(args.pages):
+                    result = client.list_courses(
+                        display_start=display_start,
+                        display_length=args.length,
+                        s_echo=s_echo,
+                        query_params={"kcxx": args.kcxx or "", "skls": args.skls or ""},
+                    )
+                    rows = result.get("aaData") or []
+                    candidates.extend(rows)
+                    if len(rows) < args.length:
+                        break
+                    display_start += args.length
+                    s_echo += 1
+
+                min_seats = args.min_seats
+                for course in candidates:
+                    syrs = _as_int(course.get("syrs"))
+                    if syrs is not None and syrs < min_seats:
+                        continue
+                    if not args.allow_conflict and _is_conflict(course):
+                        continue
+                    if not _keyword_match(course, keywords):
+                        continue
+
+                    kcid = course.get("kcid") or course.get("jx02id")
+                    jx0404id = course.get("jx0404id")
+                    if not kcid or not jx0404id:
+                        continue
+
+                    sel = client.select_course(kcid=kcid, jx0404id=jx0404id)
+                    if sel.get("success") is True:
+                        return {"selected": course, "result": sel}
+                    raise RuntimeError(_format_api_failure(sel))
+
+                raise RuntimeError(f"No match for: {' '.join(keywords)}")
+
+            result = run_polling(
+                action=action,
+                interval_s=args.interval,
+                max_attempts=args.attempts,
+                stop_exceptions=(JwxAuthError, SystemExit, KeyboardInterrupt),
+            )
+    except JwxAuthError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if result.last_result is not None:
+        print("选课成功")
+        print(json.dumps(result.last_result, ensure_ascii=False))
+        return 0
+
+    print(f"选课失败（已重试 {result.attempts} 次）：{result.last_error}", file=sys.stderr)
+    return 1
 
 
 def _parse_at(value: str) -> datetime:
@@ -247,9 +435,14 @@ def cmd_schedule_select(args: argparse.Namespace) -> int:
                 result = client.select_course(kcid=args.kcid, jx0404id=args.jx0404id)
                 if result.get("success") is True:
                     return result
-                raise RuntimeError(result.get("message", str(result)))
+                raise RuntimeError(_format_api_failure(result))
 
-            result = run_polling(action=action, interval_s=args.interval, max_attempts=args.attempts)
+            result = run_polling(
+                action=action,
+                interval_s=args.interval,
+                max_attempts=args.attempts,
+                stop_exceptions=(JwxAuthError, SystemExit, KeyboardInterrupt),
+            )
     except JwxAuthError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -310,12 +503,17 @@ def cmd_schedule_auto(args: argparse.Namespace) -> int:
                     sel = client.select_course(kcid=kcid, jx0404id=jx0404id)
                     if sel.get("success") is True:
                         return {"selected": course, "result": sel}
-                    last_message = sel.get("message", str(sel))
+                    last_message = _format_api_failure(sel)
                     continue
 
                 raise RuntimeError(last_message or "未找到可选课程")
 
-            result = run_polling(action=action, interval_s=args.interval, max_attempts=args.attempts)
+            result = run_polling(
+                action=action,
+                interval_s=args.interval,
+                max_attempts=args.attempts,
+                stop_exceptions=(JwxAuthError, SystemExit, KeyboardInterrupt),
+            )
     except JwxAuthError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -379,6 +577,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto.add_argument("--dry-run", action="store_true")
     p_auto.set_defaults(func=cmd_auto_select)
 
+    p_pick = sub.add_parser("pick", help="Pick first matched course by keyword(s), then select")
+    _add_common_args(p_pick)
+    p_pick.add_argument("query", nargs="+", help="Keyword(s), e.g. 混合公选 数学 / 英语")
+    p_pick.add_argument("--kcxx", default="", help="Course/teacher keyword (server-side)")
+    p_pick.add_argument("--skls", default="", help="Teacher name (server-side)")
+    p_pick.add_argument("--start", type=int, default=0)
+    p_pick.add_argument("--length", type=int, default=50)
+    p_pick.add_argument("--pages", type=int, default=1)
+    p_pick.add_argument("--echo", type=int, default=1)
+    p_pick.add_argument("--min-seats", type=int, default=1)
+    p_pick.add_argument("--allow-conflict", action="store_true")
+    p_pick.add_argument("--dry-run", action="store_true")
+    p_pick.set_defaults(func=cmd_pick)
+
     p_sched = sub.add_parser("schedule", help="Scheduled actions")
     sub_sched = p_sched.add_subparsers(dest="schedule_cmd", required=True)
 
@@ -387,7 +599,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sched_select.add_argument("--kcid", required=True)
     p_sched_select.add_argument("--jx0404id", required=True)
     p_sched_select.add_argument("--at", default=None, help="ISO time or unix timestamp")
-    p_sched_select.add_argument("--interval", type=float, default=0.5)
+    p_sched_select.add_argument("--interval", type=float, default=0.1)
     p_sched_select.add_argument("--attempts", type=int, default=60)
     p_sched_select.set_defaults(func=cmd_schedule_select)
 
@@ -401,9 +613,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_sched_auto.add_argument("--min-seats", type=int, default=1)
     p_sched_auto.add_argument("--allow-conflict", action="store_true")
     p_sched_auto.add_argument("--at", default=None, help="ISO time or unix timestamp")
-    p_sched_auto.add_argument("--interval", type=float, default=0.5)
+    p_sched_auto.add_argument("--interval", type=float, default=0.1)
     p_sched_auto.add_argument("--attempts", type=int, default=60)
     p_sched_auto.set_defaults(func=cmd_schedule_auto)
+
+    p_sched_pick = sub_sched.add_parser("pick", help="Pick by keyword(s) at a time, then retry")
+    _add_common_args(p_sched_pick)
+    p_sched_pick.add_argument("query", nargs="+", help="Keyword(s), e.g. 混合公选 数学 / 英语")
+    p_sched_pick.add_argument("--kcxx", default="", help="Course/teacher keyword (server-side)")
+    p_sched_pick.add_argument("--skls", default="", help="Teacher name (server-side)")
+    p_sched_pick.add_argument("--start", type=int, default=0)
+    p_sched_pick.add_argument("--length", type=int, default=50)
+    p_sched_pick.add_argument("--pages", type=int, default=1)
+    p_sched_pick.add_argument("--echo", type=int, default=1)
+    p_sched_pick.add_argument("--min-seats", type=int, default=1)
+    p_sched_pick.add_argument("--allow-conflict", action="store_true")
+    p_sched_pick.add_argument("--at", default=None, help="ISO time or unix timestamp")
+    p_sched_pick.add_argument("--interval", type=float, default=0.1)
+    p_sched_pick.add_argument("--attempts", type=int, default=120)
+    p_sched_pick.add_argument("--dry-run", action="store_true")
+    p_sched_pick.set_defaults(func=cmd_schedule_pick)
 
     return parser
 

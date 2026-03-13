@@ -32,6 +32,7 @@ def run_polling(
     action: Callable[[], T],
     interval_s: float,
     max_attempts: int,
+    stop_exceptions: tuple[type[BaseException], ...] = (SystemExit, KeyboardInterrupt),
 ) -> ScheduleResult:
     started_at = datetime.now()
     attempts = 0
@@ -50,7 +51,9 @@ def run_polling(
                 last_error=last_error,
                 last_result=last_result,
             )
-        except Exception as exc:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
+            if isinstance(exc, stop_exceptions):
+                raise
             last_error = str(exc)
             time.sleep(interval_s)
 
@@ -61,4 +64,3 @@ def run_polling(
         last_error=last_error,
         last_result=last_result,
     )
-
